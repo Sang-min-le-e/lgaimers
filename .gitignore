@@ -2,3 +2,9 @@ data/train.csv
 data/trackman_history.csv
 __pycache__/
 .ipynb_checkpoints/
+.DS_Store
+.vscode/
+submit/
+submit.zip
+output/
+/model/

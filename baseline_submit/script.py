@@ -3,9 +3,91 @@ import os
 
 import joblib
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
 
 ID_COL = "row_id"
 TARGET_COL = "control_success"
+
+
+# =======================
+# 학습 노트북에서 정의한 커스텀 전처리 클래스 (그대로 복사)
+#
+# joblib.load()는 pickle 기반이라, 모델 파일 안에 저장된 커스텀 클래스
+# 인스턴스를 복원하려면 로드하는 쪽(this script)에도 동일한 이름의 클래스가
+# 정의되어 있어야 한다. 노트북에서 클래스를 바꾸면 여기도 반드시 같이 바꿀 것.
+# =======================
+
+class AsofRateSmoother(BaseEstimator, TransformerMixin):
+    """표본수(n)가 작을수록 prior(학습 데이터 평균) 쪽으로, 클수록 실제 관측값
+    쪽으로 끌어당기는 (n*rate + k*prior) / (n+k) 형태의 empirical Bayes smoothing.
+    n=0(결측)이면 그대로 prior 값이 된다.
+    """
+
+    RATE_GROUPS = [
+        ("asof_pitcher_n", ["asof_pitcher_success_rate", "asof_pitcher_reverse_rate",
+                             "asof_pitcher_middle_rate", "asof_pitcher_ball_rate",
+                             "asof_pitcher_strike_rate"]),
+        ("asof_batter_n", ["asof_batter_success_rate", "asof_batter_middle_rate"]),
+        ("asof_pitcher_pitchmix_n", ["asof_pitcher_fastball_rate",
+                                      "asof_pitcher_breaking_rate",
+                                      "asof_pitcher_offspeed_rate"]),
+    ]
+    PREV_GAME_FALLBACK = [
+        ("asof_pitcher_prev1_game_success_rate", "asof_pitcher_success_rate"),
+        ("asof_pitcher_prev3_game_success_rate", "asof_pitcher_success_rate"),
+        ("asof_pitcher_prev5_game_success_rate", "asof_pitcher_success_rate"),
+        ("asof_pitcher_prev1_game_middle_rate", "asof_pitcher_middle_rate"),
+        ("asof_pitcher_prev3_game_middle_rate", "asof_pitcher_middle_rate"),
+        ("asof_pitcher_prev5_game_middle_rate", "asof_pitcher_middle_rate"),
+    ]
+    SMOOTHING_K = 50
+
+    def fit(self, X, y=None):
+        self.priors_ = {
+            c: X[c].mean()
+            for _, rate_cols in self.RATE_GROUPS for c in rate_cols
+        }
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        X["is_pitcher_cold_start"] = (X["asof_pitcher_n"] == 0).astype(int)
+        X["is_batter_cold_start"] = (X["asof_batter_n"] == 0).astype(int)
+
+        for n_col, rate_cols in self.RATE_GROUPS:
+            n = X[n_col]
+            for c in rate_cols:
+                raw = X[c].fillna(0)
+                X[c] = (n * raw + self.SMOOTHING_K * self.priors_[c]) / (n + self.SMOOTHING_K)
+
+        for prev_col, fallback_col in self.PREV_GAME_FALLBACK:
+            X[prev_col] = X[prev_col].fillna(X[fallback_col])
+
+        return X
+
+
+class DerivedFeatureBuilder(BaseEstimator, TransformerMixin):
+    """투수-타자 능력 차이, 카운트/주자 압박, 좌우 매치업 등 도메인 지식 기반
+    상호작용을 명시적으로 만든다. row별 계산이라 fit에서 저장할 상태가 없다.
+    """
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        X["pitcher_batter_success_diff"] = (
+            X["asof_pitcher_success_rate"] - X["asof_batter_success_rate"])
+        X["pitcher_batter_middle_diff"] = (
+            X["asof_pitcher_middle_rate"] - X["asof_batter_middle_rate"])
+
+        X["count_pressure"] = X["balls_before"] - X["strikes_before"]
+        X["is_full_count"] = ((X["balls_before"] == 3) & (X["strikes_before"] == 2)).astype(int)
+        X["is_two_strike_pressure"] = (X["strikes_before"] == 2).astype(int)
+        X["is_scoring_position"] = ((X["runner_on_2b"] == 1) | (X["runner_on_3b"] == 1)).astype(int)
+
+        X["same_hand_matchup"] = (X["pitcher_hand"] == X["batter_hand"]).astype(int)
+        return X
 
 
 # =======================
