@@ -1,0 +1,4 @@
+data/train.csv
+data/trackman_history.csv
+__pycache__/
+.ipynb_checkpoints/
