@@ -209,8 +209,7 @@ on <module 'sklearn.compose._column_transformer'>` 발생.
 - B: 로컬 Python을 3.11+로 올리고 1.8.0으로 재학습. 훨씬 번거롭고 지금 쓰는 기능엔
   버전 이점이 없어서 비추천.
 
-**상태**: 사용자에게 A안 제안했고 확인 대기 중 — **아직 `requirements.txt` 수정 안 됨**.
-다음 세션에서 이어서 처리할 것.
+**상태**: A안대로 `requirements.txt`를 `scikit-learn==1.6.1`로 수정 완료 (2026-08-12).
 
 ## 다음 논의 후보 (로드맵)
 
@@ -223,7 +222,7 @@ on <module 'sklearn.compose._column_transformer'>` 발생.
 - [x] recency weighting 시도 — 효과 미미, 트렌드 외삽 기반 보정이 더 유망 (위 섹션 참고)
 - [ ] **1순위**: 트렌드 외삽 기반 calibration shift 구현 — 시즌별 선형회귀로 다음 시즌
   예상 성공률을 구해서 모델 예측 평균을 그쪽으로 보정. recency weighting보다 직접적인 해법일 가능성.
-- [ ] `requirements.txt` scikit-learn 버전 수정 (1.8.0 → 1.6.1) — 사용자 확인 대기 중
+- [x] `requirements.txt` scikit-learn 버전 수정 (1.8.0 → 1.6.1)
 - [ ] 모델 선택: RF → LightGBM/XGBoost/CatBoost 비교
 - [ ] 앙상블/스태킹 (여유 있으면)
 

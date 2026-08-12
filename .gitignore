@@ -1,5 +1,4 @@
-data/train.csv
-data/trackman_history.csv
+data/
 __pycache__/
 .ipynb_checkpoints/
 .DS_Store
@@ -8,3 +7,4 @@ submit/
 submit.zip
 output/
 /model/
+baseline_submit/model/
