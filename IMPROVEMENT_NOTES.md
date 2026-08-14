@@ -112,6 +112,8 @@ asof_* 스무딩에 이어서 세 가지를 한 번에 적용하고 CV로 효과
 | + asof_* 스무딩 | 8XX | 20XX, 0, 6XX | "조금 오른 양상" |
 | + 파생 피처 3종 (OneHot 포함) | 884.4 | [2176.6, 0.0, 476.7] | 재현 스크립트로 정밀 확인 (val=2022/2023/2024) |
 | + recency weighting (half_life=2) | 910.9 | [2188.9, 0.0, 543.7] | 효과 미미. 아래 "recency weighting 시도" 참고 |
+| RF → HGB 교체 (기본 파라미터, max_iter=100/lr=0.1/leaf=200) | 937.03 | [2213.53, 0, 597.54] | **실제 제출 점수 810점** (2026-08-14) |
+| + HGB 그리드서치 (lr=0.03, max_leaf_nodes=63, min_samples_leaf=400) | 981.79 | [2254.29, 0, 691.08] | CV상 최적이었으나 **실제 제출 767점으로 하락** (810점 대비 -43). 되돌림 — 아래 "교훈" 참고 |
 
 ## fold=2023 점수가 0으로 나오는 이유 진단 (2026-08-12)
 
@@ -211,6 +213,81 @@ on <module 'sklearn.compose._column_transformer'>` 발생.
 
 **상태**: A안대로 `requirements.txt`를 `scikit-learn==1.6.1`로 수정 완료 (2026-08-12).
 
+## 모델 교체: RandomForest → HistGradientBoosting (2026-08-14)
+
+**배경**: `make_model(model_type=...)`으로 동일한 전처리·walk-forward CV·recency
+weighting 위에서 RF와 `HistGradientBoostingClassifier`(HGB)를 바로 비교할 수 있게
+구현됨(`[Baseline_Train]...ipynb` `## 4.`). HGB는 log-loss를 직접 최적화하며 순차적으로
+잔차를 학습해 확률 보정이 RF보다 좋은 경향이 있고, sklearn 내장이라 `requirements.txt`에
+새 의존성이 필요 없음.
+
+**결과**: HGB로 실제 제출 → **평가 점수 810점**. (walk-forward CV local mean은 기본
+파라미터 기준 937.03 — recency weighting 적용 RF 910.9보다 높음. CV와 실제 평가 점수의
+절대값 차이는 fold 구성이 다르니 그러려니 하되, HGB가 RF보다 낫다는 방향은 일치.)
+
+**제출 중 발견한 버그 3 (수정 완료)**: `HistGradientBoostingClassifier`는 fit 후
+`_feature_subsample_rng`라는 numpy `Generator(PCG64)` 객체를 내부 상태로 들고 있는데
+(predict에는 안 쓰이는 fit 전용 상태), 이게 pickle에 그대로 들어가면 채점 서버의 numpy
+버전이 학습 환경과 다를 때 `"not a known BitGenerator module"` 에러로 unpickle이 깨짐.
+`## 5.` 저장 직전에 `del clf._feature_subsample_rng`로 제거해서 해결 (predict 결과에는
+영향 없음 확인).
+
+## HGB 하이퍼파라미터 그리드서치 (2026-08-14)
+
+`## 4-1.`에 그리드서치 셀 추가 (`learning_rate` × `max_leaf_nodes` × `min_samples_leaf`,
+27개 조합 × walk-forward 3-fold, `max_iter=100`은 고정). 백그라운드 재현 스크립트로
+27개 조합 전체 실행 완료 (총 ~1067초).
+
+**CV 최적 조합**: `learning_rate=0.03, max_leaf_nodes=63, min_samples_leaf=400` →
+mean=981.79 (fold=[2254.29, 0, 691.08]). 기본 파라미터(937.03) 대비 +44.79.
+
+**❌ 실제 제출 결과 — CV와 반대로 하락 (2026-08-14)**: 이 조합으로 재학습해 제출했더니
+평가 점수가 **767점**(기본 파라미터 810점보다 -43점) 나옴. `## 4.`의 `make_model()`
+HGB 분기를 기본 파라미터(`learning_rate=0.1, min_samples_leaf=200, max_leaf_nodes`
+미지정=31)로 되돌리고, `## 4-1.` 그리드서치 셀은 노트북에서 삭제함 (아래 "교훈" 및 결과
+테이블은 기록으로 남겨둠).
+
+**교훈 — 이 walk-forward CV로 하이퍼파라미터 미세 튜닝은 신뢰하기 어려움**:
+- fold=2023이 모든 조합에서 항상 0점이라, 27개 조합의 순위를 사실상 fold=2022/2024
+  단 2개만으로 매긴 셈. 표본이 너무 적어 조합 간 CV 점수 차이가 진짜 일반화 성능 차이가
+  아니라 노이즈일 가능성이 큼 (27번 비교하면 그중 하나는 우연히 높게 나옴 — 다중비교 문제).
+- fold=2024(2025 예측의 가장 적절한 대리 지표로 판단했던 fold, 위 "2025 실전 성능이
+  CV 평균과 다를 수 있다는 논의" 참고)도 CV상으로는 597.54→691.08로 개선됐는데 실제는
+  반대로 갔음 — "2024 fold가 2025의 좋은 proxy"라는 가정 자체도 이번 사례로 약해짐.
+- 가설: `max_leaf_nodes`를 63으로 늘려 모델 용량을 키운 게, 이 프로젝트의 핵심 약점인
+  "미래로 갈수록 하락하는 추세를 못 뻗어나감(extrapolation 실패)"을 CV 관측 시즌
+  (2022/2024)에서는 완화하는 것처럼 보였지만, 실제로는 과거 시즌의 세부 패턴에 더
+  밀착(암기)한 것이라 2025로의 외삽은 오히려 더 나빠졌을 수 있음. 검증되지 않은 가설.
+- **결론**: 이 CV로 모델 종류(RF vs HGB처럼 큰 구조적 차이)를 비교하는 건 유효했지만,
+  같은 모델 안에서 하이퍼파라미터 미세 조정 순위를 매기는 데는 신뢰도가 부족함. 다음에
+  하이퍼파라미터 탐색을 다시 시도한다면 (a) fold=2023 문제를 먼저 해결하거나,
+  (b) CV 점수 차이가 fold std 대비 충분히 크지 않으면 채택하지 않는 등 더 보수적인
+  기준이 필요.
+
+| learning_rate | max_leaf_nodes | min_samples_leaf | mean_score |
+|---|---|---|---|
+| 0.03 | 63 | 400 | 981.79 |
+| 0.03 | 63 | 200 | 977.27 |
+| 0.03 | 31 | 200 | 975.20 |
+| 0.03 | 31 | 400 | 974.51 |
+| 0.03 | 63 | 100 | 973.86 |
+| 0.1 (기존값) | 31 (기존값) | 200 (기존값) | 937.03 |
+
+**주의 — 탐색 경계 효과**: 상위 5개 조합이 전부 `learning_rate=0.03`(탐색 범위 최솟값)에
+몰려 있고, 상위권은 `max_leaf_nodes=63`(탐색 범위 최댓값)도 선호함. 즉 최적값이 그리드
+경계 밖(`learning_rate < 0.03`, `max_leaf_nodes > 63`)에 있을 가능성이 있음 —
+`learning_rate`를 낮추면 보통 `max_iter`를 늘려야 성능이 유지되므로, 다음 라운드는
+`learning_rate ∈ {0.01, 0.02, 0.03}` × `max_iter ∈ {100, 200, 300}` ×
+`max_leaf_nodes ∈ {63, 127}` 정도로 범위를 넓혀서 재탐색해볼 만함 (다음 세션 후보).
+
+**참고**: `min_samples_leaf`는 세 값 모두에서 큰 값(400)이 조금씩 더 나은 경향 —
+데이터가 140만 행으로 크기 때문에 리프를 더 크게 잡아도 과소적합으로 이어지지 않는 듯.
+
+**fold=2023이 모든 조합에서 0점인 건 여전함** — HGB 하이퍼파라미터로는 해결 안 되는
+문제. 원인은 기존에 진단한 "트렌드 추정 실패"(RF/HGB 공통, 위 "fold=2023 점수가 0으로
+나오는 이유 진단" 참고)와 동일한 것으로 보임 — 트렌드 외삽 기반 calibration shift가
+여전히 유효한 다음 액션 아이템.
+
 ## 다음 논의 후보 (로드맵)
 
 - [ ] 피처 엔지니어링: `trackman_history.csv` 활용 — **주의**: `pitcher_id`(main, 정수)와
@@ -223,7 +300,10 @@ on <module 'sklearn.compose._column_transformer'>` 발생.
 - [ ] **1순위**: 트렌드 외삽 기반 calibration shift 구현 — 시즌별 선형회귀로 다음 시즌
   예상 성공률을 구해서 모델 예측 평균을 그쪽으로 보정. recency weighting보다 직접적인 해법일 가능성.
 - [x] `requirements.txt` scikit-learn 버전 수정 (1.8.0 → 1.6.1)
-- [ ] 모델 선택: RF → LightGBM/XGBoost/CatBoost 비교
+- [x] 모델 선택: RF → HGB 비교 — HGB 채택, 실제 제출 810점 (위 섹션 참고)
+- [ ] 모델 선택: HGB → LightGBM/XGBoost/CatBoost 비교 (여유 있으면)
+- [x] HGB 하이퍼파라미터 그리드서치 — **실제 제출에서 810→767점 하락, 기본 파라미터로 되돌림** (위 섹션 "교훈" 참고). `## 4-1.` 셀은 노트북에서 삭제, 결과는 기록으로만 남김.
+- [ ] 그리드 경계 밖 재탐색은 보류 — 이 CV로 미세 튜닝 자체의 신뢰도 문제부터 해결 필요
 - [ ] 앙상블/스태킹 (여유 있으면)
 
 ## 파일 구조 메모
