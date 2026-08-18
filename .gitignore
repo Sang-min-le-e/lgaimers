@@ -4,8 +4,9 @@ __pycache__/
 .DS_Store
 .vscode/
 .venv/
-submit/
+submit/model/
 submit.zip
+submit_*.zip
 output/
 /model/
 baseline_submit/model/
