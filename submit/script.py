@@ -109,6 +109,9 @@ class TrendCalibrator(BaseEstimator, ClassifierMixin):
     마지막 분기점과 같은 leaf로 취급하므로, 학습 범위 밖 시즌의 raw 예측은 이미
     마지막 학습 시즌 수준으로 수렴해 있다 — 기준점을 전체 기간 평균으로 잡으면
     과잉보정(overshoot)하게 된다.
+
+    [2026-08-19] 반기 단위 시간축, game_type(R/F)별 추세선 실험 모두 CV/실전에서
+    이 season 단일 버전(실제 제출 862.9점)보다 못해 되돌림 — IMPROVEMENT_NOTES.md 참고.
     """
 
     def __init__(self, pipeline, season_col="season"):

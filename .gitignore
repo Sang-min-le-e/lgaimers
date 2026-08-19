@@ -10,3 +10,4 @@ submit_*.zip
 output/
 /model/
 baseline_submit/model/
+catboost_info/
