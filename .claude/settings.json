@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /home/sangmin/Projects/lg_aimers/.claude/hooks/notion-sync-reminder.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

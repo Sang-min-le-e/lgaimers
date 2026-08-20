@@ -118,6 +118,9 @@ asof_* 스무딩에 이어서 세 가지를 한 번에 적용하고 CV로 효과
 | + TrendCalibrator 반기 단위 업그레이드 (season→season+0.5*half) | 952.9 | [2195.25, 0, 663.54] | 3-fold 전부 개선 방향이었으나 **실제 제출 851점으로 하락** (862.9 대비 -11.9). HGB 그리드서치와 같은 CV/실전 불일치 패턴. 되돌림 — 아래 "반기 단위 TrendCalibrator 실제 제출 결과" 참고 |
 | + game_type(R/F)별 분리 트렌드 (season 단위 위에 적용) | 827.4 | [2074.83, 0, 407.23] | CV부터 기존보다 하락 — F 표본이 적어 추세선이 노이즈에 휘둘림. 실제 제출 안 함, 코드 미반영. 아래 "game_type(R/F) 분리 시도" 참고 |
 | HGB → CatBoost 교체 (season TrendCalibrator 유지) | 956.1 | [2165.0, 0, 703.3] | CV상 최고(RF/HGB/LightGBM/XGBoost/CatBoost 중)였으나 **실제 제출 862.2점으로 862.9와 사실상 동률(-0.7)**. CV 개선(mean +47.6)이 실전에 전혀 반영 안 됨 — 아래 "CV proxy 신뢰도에 대한 종합 진단" 참고 |
+| hgb_native (OneHot → OrdinalEncoder + HGB `categorical_features`) | 900.00 | [2020.52, 0, 679.46] | fold=2022 -54.6 악화, fold=2024 +29.1 개선. 채택 안 함 — 아래 "네이티브 범주형 처리 실험" 참고 |
+| catboost_native (원본 문자열 + CatBoost `cat_features`, OneHot/Ordinal 안 씀) | 970.55 | [2179.51, 0, 732.12] | mean·fold=2022·fold=2024 전부 CV 역대 최고(HGB+OneHot 대비 mean +62.1, fold=2024 +81.8)였으나 **실제 제출 855점으로 862.9 대비 -7.9, 862.2(CatBoost+OneHot) 대비도 -7.2 하락**. CV proxy가 가장 크게 개선됐는데 실전은 가장 크게 하락한 사례 — 되돌림. 아래 "네이티브 범주형 처리 실험", "CV proxy 신뢰도에 대한 종합 진단" 참고 |
+| **hgb_ohe + team_id 범주형 수정** (HGB, CAT_COLS에 pitcher_team_id/batter_team_id 추가) | **934.02** | **[2122.82, 0, 679.24]** | fold=2022(+47.7)·fold=2024(+28.9) **동시에 개선**. **실제 제출 875점 — 새 최고 기록** (862.9 대비 +12.1) — 아래 "team_id 범주형 처리 누락 수정" 참고 |
 
 ## fold=2023 점수가 0으로 나오는 이유 진단 (2026-08-12)
 
@@ -670,6 +673,7 @@ end-to-end 테스트로 `test.csv` 5행 추론까지 정상 동작 확인. `scri
 | HGB 하이퍼파라미터 그리드서치 (2026-08-14) | 597.5→691.1 (+93.5) | 810→767 (**-43**) |
 | 반기 단위 TrendCalibrator (2026-08-19) | 650.4→663.5 (+13.2) | 862.9→851 (**-11.9**) |
 | HGB→CatBoost (2026-08-19) | 650.4→703.3 (+53.0) | 862.9→862.2 (**-0.7**, 동률) |
+| CatBoost 네이티브 범주형 처리 (2026-08-20) | 650.4→732.1 (**+81.8, 역대 최고**) | 862.9→855 (**-7.9, 역대 최대 하락**) |
 
 **대조적으로 유일하게 성공한 사례** — TrendCalibrator 최초 도입(버그 수정판)은
 CV fold=2024 개선폭(+52.8)과 실전 개선폭(+52.9)이 거의 정확히 일치했음.
@@ -718,6 +722,170 @@ OneHotEncoder로 미리 인코딩해서 HGB/CatBoost 둘 다에 넣고 있음 �
 `make_model()`에서 CatBoost 분기 제거, `MODEL_TYPE` 기본값 `"hgb"`로 복귀.
 **`model/rf.pkl`, `submit/model/rf.pkl`은 아직 CatBoost로 학습된 상태(862.2점
 버전)라 stale함** — 다음에 HGB로 재제출하려면 노트북 `## 4.`/`## 5.` 재실행 필요.
+
+## 네이티브 범주형 처리 실험 (2026-08-20)
+
+**배경**: 지난 세션 "HGB vs CatBoost 이론 비교" 결론에서 "아직 안 써본 진짜 차별점"으로
+남겨뒀던 것 — HGB/CatBoost 둘 다 그동안 `game_type` 등 범주형 3개(`top_bottom`,
+`game_type`, `base_state`)를 OneHotEncoder로 미리 펼쳐서 넣고 있었고, 두 모델의
+네이티브 범주형 처리 능력(HGB `categorical_features`, CatBoost `cat_features` ordered
+target statistics)은 시도한 적이 없었음. `game_type`(R/F) 성공률 차이가 0.51 vs
+0.60로 크다는 걸 이미 확인해뒀던 터라, 다른 피처와의 상호작용까지 살려서 인코딩하면
+개선 여지가 있을 거라는 가설.
+
+**재현 스크립트**(`/tmp/.../native_categorical_compare.py`, 저장 안 함 — 1회성)로
+walk-forward CV 3가지 변형 비교 (season TrendCalibrator + recency weighting
+half_life=2 유지, 다른 조건 전부 동일):
+
+| 변형 | mean | fold=[2022, 2023, 2024] |
+|---|---|---|
+| `hgb_ohe` (현재 프로덕션 재현) | 908.48 | [2075.08, 0, 650.35] |
+| `hgb_native` (OrdinalEncoder + HGB `categorical_features`) | 900.00 | [2020.52, 0, 679.46] |
+| `catboost_native` (원본 문자열 그대로 + CatBoost `cat_features`) | **970.55** | **[2179.51, 0, 732.12]** |
+
+`hgb_ohe`가 기존 로그(908.5, [2075.08, 0, 650.35])와 정확히 일치해 재현 스크립트
+자체는 신뢰할 수 있음을 먼저 확인.
+
+- **hgb_native**: mean은 오히려 -8.48 하락(fold=2022가 -54.6 악화). fold=2024만
+  +29.1 개선. 외부 의존성 추가 없이 시도할 수 있는 저위험 옵션이었지만 이득이
+  작고 방향이 엇갈려 채택 안 함.
+- **catboost_native**: mean·fold=2022·fold=2024 **전부** 개선. 특히 fold=2024=732.12는
+  지금까지 나온 모든 시도(그리드서치, 캘리브레이션 세분화, 이전 CatBoost+OneHot
+  포함) 중 역대 최고. CatBoost+OneHot(956.1/703.3, 위 표 참고)보다도 더 좋음 —
+  네이티브 처리가 OneHot보다 실제로 더 많은 정보를 살리는 것으로 보임.
+
+**리스크 — CV proxy 신뢰도 문제와의 충돌**: 위 "CV proxy(특히 fold=2024) 신뢰도에
+대한 종합 진단"에서 이미 확립한 패턴은, "이미 합리적으로 작동하는 파이프라인을 더
+정교하게 다듬는 변화"는 CV에서 크게 좋아 보여도 실전에 반영 안 된 사례가 3연속
+(그리드서치 CV+93.5→실전-43, 반기 캘리브레이션 CV+13.2→실전-11.9, HGB→CatBoost
+CV+53.0→실전-0.7 동률)이었다는 것. `catboost_native`도 성격상 이 세 사례와 비슷함
+(파이프라인 정교화, 큰 CV 개선). 특히 CatBoost는 이미 한 번(OneHot 버전) 이 패턴으로
+실패한 전례가 있어 재현 위험이 더 큼.
+
+**결정**: 사용자 판단으로 `catboost_native` 채택, 재제출 진행. 노트북
+(`[Baseline_Train]...ipynb`)과 `submit/script.py`/`requirements.txt`에 반영:
+- `## 1.` (임포트): `from catboost import CatBoostClassifier` 추가
+- `## 3.`: `preprocessor_native_cat` 신규 추가 — `CAT_COLS`는 `"passthrough"`로
+  원본 문자열 그대로 통과, `NUM_COLS_EXT`만 median impute. 기존 OneHot
+  `preprocessor`는 rf/hgb용으로 그대로 유지.
+- `## 4.`: `make_model()`이 `model_type`별로 `pre`(전처리)까지 같이 선택하도록
+  변경 (`rf`/`hgb`는 `preprocessor`, `catboost_native`는 `preprocessor_native_cat`).
+  `catboost_native` 분기에서 `CatBoostClassifier(cat_features=list(range(len(CAT_COLS))))`
+  — `preprocessor_native_cat`이 `set_output(transform="pandas")`라 컬럼 순서(CAT_COLS
+  가 항상 앞쪽)가 고정되므로 위치 인덱스로 지정 가능. `MODEL_TYPE` 기본값을
+  `"catboost_native"`로 변경.
+- `submit/requirements.txt`: `catboost==1.2.10` 추가 (이전에 되돌리며 제거했던 걸 복원).
+- **`submit/script.py`는 수정 불필요** — `CatBoostClassifier`는 라이브러리 클래스라
+  `requirements.txt`로 설치만 되면 joblib이 알아서 임포트함 (커스텀 클래스가
+  아니므로 클래스 정의를 script.py에 복사할 필요 없음). `"passthrough"`도 sklearn
+  내장 문자열 sentinel이라 별도 클래스 불필요.
+
+**사전 검증 (2026-08-20)**: `submit/script.py`의 클래스만 써서 5만 행 샘플로
+`catboost_native` 파이프라인 fit → pickle → **별도 프로세스**에서 `submit/script.py`
+클래스만으로 unpickle → `data/test.csv` 5행 추론까지 end-to-end 테스트 완료
+(이전 HGB/CatBoost 도입 때와 동일한 절차). 에러 없음, 예측값 정상 범위
+(`[0.428, 0.443, 0.452, 0.475, 0.463]`).
+
+**✅ 실제 제출 결과 (2026-08-20): 855점.** 862.9점(HGB+OneHot) 대비 **-7.9**,
+862.2점(CatBoost+OneHot) 대비도 **-7.2** — 네이티브 처리가 OneHot보다도 못함.
+CV 개선폭(mean +62.1, fold=2024 +81.8, 역대 최고)이 가장 컸는데 실전 하락폭도
+가장 컸던, 지금까지 중 가장 심한 CV/실전 역방향 사례. **"CV proxy 신뢰도에 대한
+종합 진단" 섹션에 4번째 실패 사례로 추가 기록.** 노트북/`submit/requirements.txt`
+모두 HGB(season TrendCalibrator)로 되돌림 — 아래 "team_id 범주형 처리 누락 수정"
+섹션 참고 (되돌리면서 같이 적용한 새 개선).
+
+**교훈**: 네이티브 범주형 처리(더 표현력 높은 인코딩)가 OneHot보다 나을 거라는
+가설은 이번 프로젝트/데이터에서는 틀렸음. `game_type`(F리그)처럼 연도별로 성공률이
+크게 요동치는 범주에 대해, 표현력이 높은 인코딩일수록 2019~2024 특유의 잡음
+패턴에 더 밀착(암기)해서 2025 외삽이 오히려 나빠질 수 있다는 가설이 이제 더
+힘을 얻음 — HGB 그리드서치 실패 때 세웠던 가설과 같은 계열.
+
+## team_id 범주형 처리 누락 수정 (2026-08-20)
+
+**배경**: catboost_native가 실전에서 실패(855점)한 뒤, "파이프라인을 더 정교하게
+다듬는" 방향이 아니라 "실제 결함을 고치는" 방향의 다른 레버를 찾다가 발견함.
+`CAT_COLS = ["top_bottom", "game_type", "base_state"]` 세 개뿐이라
+`pitcher_team_id`/`batter_team_id`가 `NUM_COLS`에 들어가 있었음 — 즉 13개
+범주(값 12~25)인 팀 ID가 **순서형 숫자로 median impute만 되고 원-핫이 안 된 채**
+모델에 들어가고 있었음. 몇 세션 전 `base_state`/`game_type`/`top_bottom`에서
+고쳤던 "OrdinalEncoder가 명목형에 임의 순서를 부여하는 문제"와 정확히 같은 종류의
+결함 — 새로 만든 피처가 아니라 **기존 파이프라인의 놓친 부분**이라는 점에서, 지금까지
+4연패한 "파이프라인 정교화" 시도들과는 성격이 다름(유일한 성공 사례인 TrendCalibrator
+anchor 버그 수정과 같은 계열).
+
+참고로 `pitcher_id`/`batter_id`(792/830개 고카디널리티 raw ID)도 같은 문제지만
+원-핫 하기엔 카디널리티가 너무 크고, asof_* 피처들이 이미 개인별 능력치를 요약해주고
+있어서 raw ID 자체는 드랍 후보로 같이 검토함.
+
+**재현 스크립트**(`/tmp/.../team_id_categorical_compare.py`, 저장 안 함 — 1회성)로
+walk-forward CV 3가지 비교. 기준은 catboost_native가 아니라 **실전 최고인 HGB+OneHot
++season TrendCalibrator**(recency weighting half_life=2 유지):
+
+| 변형 | mean | fold=[2022, 2023, 2024] |
+|---|---|---|
+| `hgb_ohe_base` (기존, 재현 확인용) | 908.48 | [2075.08, 0, 650.35] |
+| `hgb_ohe_teamid` (team_id를 CAT_COLS에 추가, 5개 원-핫) | **934.02** | **[2122.82, 0, 679.24]** |
+| `hgb_ohe_teamid_noid` (+ raw pitcher_id/batter_id까지 드랍) | 916.12 | [2075.28, 0, 673.08] |
+
+`hgb_ohe_teamid`가 가장 좋음 — **fold=2022(+47.7)와 fold=2024(+28.9)가 동시에
+개선**됨. 지금까지 시도 대부분은 한쪽 fold가 좋아지면 다른 쪽이 나빠지는 트레이드오프
+패턴이었는데(예: hgb_native), 이번엔 방향이 일치함. raw player_id까지 드랍하는 건
+오히려 손해(934.02→916.12) — 개인 식별자 자체가 어느 정도 약한 신호(예: 낮은 ID일수록
+오래전 데뷔 = 베테랑일 가능성)를 담고 있는 것으로 추정, 그대로 유지.
+
+**주의 — 과신 금물**: catboost_native도 fold=2022(+104.4)·fold=2024(+81.8) 둘 다
+CV에서 개선됐지만 실전은 하락했음(위 표 참고). "두 fold 동시 개선"이 실전 성공을
+보장하는 신호는 아님이 이미 한 번 반증됨. 다만 이번 건은 알고리즘 교체가 아니라
+명백한 인코딩 누락 수정이라는 점에서 성격상 다르다고 판단해 채택함 — 이것도 확정이
+아니라 판단이므로, 실제 제출 결과가 나오면 이 절에 추가 기록할 것.
+
+**적용**: 노트북 `## 1.`(임포트 셀)의 `CAT_COLS`에 `"pitcher_team_id"`,
+`"batter_team_id"` 추가. `NUM_COLS`/`preprocessor`/`preprocessor_native_cat`은
+전부 `CAT_COLS`를 참조해서 만들어지므로 별도 수정 없이 자동으로 반영됨.
+`catboost_native`는 위에서 실전 실패가 확인됐으므로 이 기회에 같이 되돌림 —
+`MODEL_TYPE` 기본값을 `"hgb"`로 복귀, `make_model()`의 `catboost_native` 분기와
+`preprocessor_native_cat`, `from catboost import CatBoostClassifier` 임포트 전부
+제거(HGB→CatBoost 첫 롤백 때와 동일한 방식). `submit/requirements.txt`에서
+`catboost==1.2.10` 제거. **`submit/script.py`는 수정 불필요** (컬럼 조합만 바뀌었고
+전처리 로직 자체는 pickle 안에 있음).
+
+**✅ 실제 제출 결과 (2026-08-20): 875점.** 862.9점(HGB+OneHot, 기존 최고) 대비
+**+12.1**, 새 최고 기록. CV fold=2022/2024 동시 개선이 실전에서도 순방향으로
+확인됨 — catboost_native(두 fold 동시 개선했지만 실전 하락)와 달리, 이번엔
+"명백한 인코딩 결함 수정"이 CV·실전 방향 일치라는 이 프로젝트의 유일한 성공
+패턴(TrendCalibrator anchor 버그 수정)을 그대로 재현함. **가설 강화**: CV가
+실전과 일치하는 변화는 "버그/결함 수정" 계열이고, 어긋나는 변화는 "이미 돌아가는
+걸 더 정교하게 다듬는" 계열이라는 구분이 이제 5개 사례(성공 2, 실패 3)로 더 뚜렷해짐.
+
+## 데이터 감사 — team_id류 결함이 더 있는지 전수 확인 (2026-08-20)
+
+875점 달성 후, team_id처럼 "실제 결함"이 더 있는지 전체 47개 피처의 dtype/카디널리티를
+훑어봄(`df[c].dtype`, `nunique()`, `min/max`, 결측 여부). 발견/확인 사항:
+
+- **`pitcher_hand`/`batter_hand`**: 값 {1,2}인 이진 범주형인데 `CAT_COLS`에 없음 —
+  team_id와 같은 종류처럼 보였으나, 재현 스크립트로 CV 비교하니 **점수가 소수점까지
+  완전히 동일**(추가 전/후 `[2118.86, 0, 675.72]`로 동일). 이진 변수는 원-핫이든
+  raw 숫자든 트리가 잡을 수 있는 분할 지점이 하나뿐이라 인코딩 방식이 무관함 —
+  카디널리티 3 이상인 범주형(team_id처럼)에서만 원-핫이 실제로 의미 있다는 게
+  확인됨. **반영 안 함.**
+- **`pitcher_team_id == batter_team_id`**: 147만 행 전부 0건 — 자기 팀 매치업 같은
+  데이터 이상 없음.
+- **`home_win_expectancy` + `away_win_expectancy`**: 항상 100(평균 100.0001, std
+  0.02) — 사실상 중복 변수지만 트리 모델엔 무해해서 손댈 이유 없음.
+- **`li`(레버리지 지수)**: `control_success`와 거의 무관(사분위별 0.515~0.529로
+  평평) — 압박 상황 자체는 제구 성공에 예측력이 약함.
+- **`asof_pitcher_n` 등 `asof_*_n` 컬럼**: **시즌마다 리셋되지 않고 2019년부터
+  누적**되는 값이었음(시즌별 max: 2019=3141, 2020=5883, 2021=8669, 2022=11643,
+  2023=13636, 2024=15449). 버그는 아니지만 이 사실이 `AsofRateSmoother`의
+  `SMOOTHING_K=50`이 왜 사실상 cold-start(n=0)에만 유의미하게 작동하는지 설명해줌
+  — 중앙값 n≈2661 대비 K=50은 프라이어 가중치가 ~1.8%에 불과해 대부분의 행에서는
+  스무딩이 거의 raw rate 그대로임(의도한 설계와 일치, cold-start 전용 보정이라는
+  원래 목적 그대로).
+
+**결론**: `run_top/bot/total_before` 정합성(항상 일치), `base_state` 인코딩 등도
+같이 확인했고 추가로 손볼 만한 뚜렷한 결함은 못 찾음 — team_id 급의 "명백한
+결함"은 이번 라운드로 거의 다 훑은 것으로 판단. 다음에 또 이런 감사를 하게 되면
+위 확인된 항목들은 재검토 불필요.
 
 ## 파일 구조 메모
 
